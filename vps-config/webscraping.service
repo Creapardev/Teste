@@ -1,0 +1,57 @@
+# Serviço Systemd para Aplicação WebScraping
+# Arquivo: /etc/systemd/system/webscraping.service
+
+[Unit]
+Description=WebScraping Flask Application - maxsell.creapost.com.br
+Documentation=https://github.com/Creapardev/Teste
+After=network.target nginx.service
+Wants=network.target
+
+[Service]
+# Tipo de serviço
+Type=simple
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Usuário e grupo
+User=webscraping
+Group=webscraping
+
+# Diretórios de trabalho
+WorkingDirectory=/opt/webscraping-app
+Environment=PATH=/opt/webscraping-venv/bin
+Environment=PYTHONPATH=/opt/webscraping-app
+Environment=FLASK_ENV=production
+Environment=FLASK_APP=app.py
+
+# Comando de execução
+ExecStart=/opt/webscraping-venv/bin/python app.py
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -TERM $MAINPID
+
+# Configurações de segurança
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/webscraping-app
+ReadWritePaths=/var/log/webscraping
+
+# Limites de recursos
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webscraping-app
+
+# Configurações de timeout
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+Also=nginx.service
