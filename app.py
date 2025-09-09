@@ -28,6 +28,14 @@ app = Flask(__name__)
 progress_queue = Queue()
 current_progress = {'step': '', 'progress': 0, 'total': 0, 'status': 'idle'}
 
+# Configurações de webhook
+webhook_config = {
+    'url': '',
+    'enabled': False,
+    'headers': {},
+    'batch_size': 10
+}
+
 # Variáveis globais para Google Maps scraping
 progresso_maps = 0
 total_resultados_maps = 0
@@ -178,6 +186,41 @@ def extrair_dados(urls, name_selector='.agent-name', phone_selector="a[href^='te
     finally:
         driver.quit()
 
+def enviar_webhook(dados):
+    """Envia dados para webhook configurado"""
+    if not webhook_config['enabled'] or not webhook_config['url'] or not dados:
+        return
+    
+    try:
+        # Enviar em lotes
+        batch_size = webhook_config.get('batch_size', 10)
+        headers = {'Content-Type': 'application/json'}
+        headers.update(webhook_config.get('headers', {}))
+        
+        for i in range(0, len(dados), batch_size):
+            lote = dados[i:i + batch_size]
+            payload = {
+                'timestamp': datetime.now().isoformat(),
+                'total_records': len(lote),
+                'batch_number': (i // batch_size) + 1,
+                'data': lote
+            }
+            
+            response = requests.post(
+                webhook_config['url'],
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                print(f"Erro no webhook: {response.status_code} - {response.text}")
+            else:
+                print(f"Lote {(i // batch_size) + 1} enviado com sucesso para webhook")
+                
+    except Exception as e:
+        print(f"Erro ao enviar webhook: {str(e)}")
+
 def salvar_csv(dados):
     if not dados: return
     telefones_existentes = set()
@@ -200,6 +243,9 @@ def salvar_csv(dados):
         writer = csv.DictWriter(file, fieldnames=['nome', 'telefone'])
         if modo == 'w': writer.writeheader()
         writer.writerows(novos_registros)
+    
+    # Enviar para webhook após salvar
+    enviar_webhook(novos_registros)
 
 # --- FUNÇÕES ASSÍNCRONAS ---
 
@@ -250,7 +296,7 @@ def scraping_worker(url_base, scroll_infinite, remove_duplicates, link_selector=
 
 # --- FUNÇÕES GOOGLE MAPS ---
 
-def buscar_google_maps(termo_busca, max_resultados=50):
+def buscar_google_maps(termo_busca, max_resultados=200):
     """Busca estabelecimentos no Google Maps por termo de pesquisa"""
     global progresso_maps, total_resultados_maps, status_maps, mensagem_maps, dados_maps
     
@@ -336,13 +382,15 @@ def buscar_google_maps(termo_busca, max_resultados=50):
         resultados_coletados = 0
         total_resultados_maps = max_resultados
         
+        # Set para evitar duplicações baseado no nome do estabelecimento
+        nomes_processados = set()
+        elementos_processados = set()
+        
         # Scroll para carregar mais resultados
-        for scroll in range(10):  # Máximo 10 scrolls
+        for scroll in range(50):  # Aumentado para 50 scrolls para mais coleta
             if resultados_coletados >= max_resultados:
                 break
 
-            
-                
             # Encontrar elementos de estabelecimentos usando seletores atualizados 2024
             estabelecimentos = driver.find_elements(By.CSS_SELECTOR, ".bfdHYd, .Nv2PK, .hfpxzc, .hH0dDd, [data-result-index]")
 
@@ -363,48 +411,230 @@ def buscar_google_maps(termo_busca, max_resultados=50):
                 
             print(f"Tentativa {scroll + 1}: Encontrados {len(estabelecimentos)} estabelecimentos")
             
-            for estabelecimento in estabelecimentos[resultados_coletados:]:
+            # Processar apenas novos estabelecimentos
+            novos_estabelecimentos = 0
+            for i, estabelecimento in enumerate(estabelecimentos):
                 if resultados_coletados >= max_resultados:
                     break
+                
+                # Criar identificador único para o elemento (mais flexível)
+                try:
+                    elemento_id = estabelecimento.get_attribute('data-cid') or estabelecimento.get_attribute('data-result-index')
+                    if not elemento_id:
+                        # Usar texto do elemento como ID se não tiver atributos únicos
+                        try:
+                            texto_elemento = estabelecimento.text[:50] if estabelecimento.text else f"elemento_{scroll}_{i}"
+                            elemento_id = f"{scroll}_{i}_{hash(texto_elemento)}"
+                        except:
+                            elemento_id = f"elemento_{scroll}_{i}"
+                    
+                    if elemento_id in elementos_processados:
+                        continue  # Pular elementos já processados
+                    
+                    elementos_processados.add(elemento_id)
+                except Exception as e:
+                    # Fallback: usar posição única baseada em scroll e índice
+                    elemento_id = f"fallback_{scroll}_{i}"
+                    if elemento_id in elementos_processados:
+                        continue
+                    elementos_processados.add(elemento_id)
                     
                 try:
-                    # Primeiro, clicar no estabelecimento para abrir os detalhes
+                    # Primeiro, verificar se o driver ainda está conectado
                     try:
-                        # Tentar encontrar o elemento clicável com a classe hfpxzc
-                        # elemento_clicavel = estabelecimento.find_element(By.CSS_SELECTOR, ".Nv2PK .hfpxzc")
+                        driver.current_url  # Teste de conectividade
+                    except Exception as conn_error:
+                        print(f"Erro de conexão detectado: {conn_error}")
+                        # Tentar reconectar ou pular este elemento
+                        continue
+                    
+                    # Clicar no estabelecimento para abrir os detalhes
+                    click_success = False
+                    try:
+                        # Método 1: JavaScript click
+                        driver.execute_script("arguments[0].scrollIntoView(true);", estabelecimento)
+                        time.sleep(0.5)
                         driver.execute_script("arguments[0].click();", estabelecimento)
-                        time.sleep(2)  # Aguardar os detalhes carregarem
-                        print("Clicou no estabelecimento para abrir detalhes")
+                        time.sleep(2)
+                        click_success = True
+                        print(f"Clicou no estabelecimento {i+1} para abrir detalhes")
                     except Exception as click_error:
-                        print(f"Erro ao clicar no estabelecimento: {click_error}")
-                        # Tentar clicar no próprio elemento estabelecimento
+                        print(f"Erro ao clicar no estabelecimento {i+1}: {click_error}")
+                        # Método 2: Selenium click direto
                         try:
-                            driver.execute_script("arguments[0].click();", estabelecimento)
+                            estabelecimento.click()
                             time.sleep(2)
-                            print("Clicou no estabelecimento (fallback)")
-                        except:
-                            print("Não foi possível clicar no estabelecimento")
+                            click_success = True
+                            print(f"Clicou no estabelecimento {i+1} (método direto)")
+                        except Exception as direct_click_error:
+                            print(f"Erro no clique direto: {direct_click_error}")
+                            # Método 3: ActionChains
+                            try:
+                                from selenium.webdriver.common.action_chains import ActionChains
+                                actions = ActionChains(driver)
+                                actions.move_to_element(estabelecimento).click().perform()
+                                time.sleep(2)
+                                click_success = True
+                                print(f"Clicou no estabelecimento {i+1} (ActionChains)")
+                            except Exception as action_error:
+                                print(f"Erro com ActionChains: {action_error}")
+                                print(f"Não foi possível clicar no estabelecimento {i+1}")
+                    
+                    # Se não conseguiu clicar, tentar extrair dados sem clicar
+                    if not click_success:
+                        print(f"Tentando extrair dados sem clicar no estabelecimento {i+1}")
                     
                     # Extrair dados do estabelecimento
                     dados_estabelecimento = extrair_dados_estabelecimento(driver, estabelecimento)
-                    if dados_estabelecimento:
-                        dados_maps.append(dados_estabelecimento)
-                        resultados_coletados += 1
-                        progresso_maps = int((resultados_coletados / max_resultados) * 100)
-                        mensagem_maps = f"Coletados {resultados_coletados} de {max_resultados} estabelecimentos"
+                    if dados_estabelecimento and dados_estabelecimento.get('nome'):
+                        nome = dados_estabelecimento['nome'].strip()
+                        nome_normalizado = nome.lower()
+                        
+                        # Filtrar nomes inválidos ANTES de processar
+                        nomes_invalidos = ['resultados', 'maps', 'google', 'pesquisar', 'resultado', 'estabelecimentos', 'nome não encontrado']
+                        if nome_normalizado in nomes_invalidos or len(nome) < 3:
+                            print(f"✗ Nome inválido rejeitado: {nome}")
+                            continue
+                        
+                        # Verificar duplicação por nome (normalizado)
+                        if nome_normalizado not in nomes_processados:
+                            nomes_processados.add(nome_normalizado)
+                            dados_maps.append(dados_estabelecimento)
+                            resultados_coletados += 1
+                            novos_estabelecimentos += 1
+                            progresso_maps = int((resultados_coletados / max_resultados) * 100)
+                            mensagem_maps = f"Coletados {resultados_coletados} de {max_resultados} estabelecimentos únicos"
+                            print(f"✓ Adicionado: {nome} (Total: {resultados_coletados})")
+                        else:
+                            print(f"✗ Duplicado ignorado: {nome}")
                         
                 except Exception as e:
-                    print(f"Erro ao extrair dados do estabelecimento: {e}")
+                    print(f"Erro ao extrair dados do estabelecimento {i+1}: {e}")
                     continue
             
-            # Scroll para carregar mais
+            print(f"Scroll {scroll + 1}: {novos_estabelecimentos} novos estabelecimentos adicionados")
+            
+            # Verificar se há mais estabelecimentos disponíveis na página
+            try:
+                # Contar total de estabelecimentos visíveis na página
+                todos_estabelecimentos_visiveis = driver.find_elements(By.CSS_SELECTOR, 
+                    "[data-result-index], .hfpxzc, .Nv2PK .TFQHme, .bfdHYd .fontBodyMedium, .lI9IFe, .yuRUbf")
+                total_visiveis = len(todos_estabelecimentos_visiveis)
+                print(f"Total de estabelecimentos visíveis na página: {total_visiveis}")
+                
+                # Verificar se há indicação de mais resultados
+                mais_resultados_disponiveis = False
+                try:
+                    # Procurar por indicadores de que há mais resultados
+                    indicadores_mais = driver.find_elements(By.CSS_SELECTOR, 
+                        "[data-value='Mostrar mais resultados'], .HlvSq, .n7lv7yjyC35__root, [aria-label*='mais'], [aria-label*='more']")
+                    if indicadores_mais:
+                        mais_resultados_disponiveis = True
+                        print("Detectados indicadores de mais resultados disponíveis")
+                except:
+                    pass
+                    
+                # Verificar se a página ainda está carregando
+                try:
+                    loading_elements = driver.find_elements(By.CSS_SELECTOR, 
+                        ".loading, [aria-label*='Carregando'], [aria-label*='Loading'], .spinner")
+                    if loading_elements:
+                        print("Página ainda carregando, aguardando...")
+                        time.sleep(2)
+                except:
+                    pass
+                    
+            except Exception as check_error:
+                print(f"Erro ao verificar estabelecimentos disponíveis: {check_error}")
+                total_visiveis = 0
+                mais_resultados_disponiveis = False
+            
+            # Se não encontrou novos estabelecimentos, contar scrolls consecutivos
+            if novos_estabelecimentos == 0:
+                if not hasattr(buscar_google_maps, 'scrolls_sem_novos'):
+                    buscar_google_maps.scrolls_sem_novos = 0
+                buscar_google_maps.scrolls_sem_novos += 1
+                
+                # Lógica mais inteligente para determinar quando parar
+                if total_visiveis > resultados_coletados and mais_resultados_disponiveis:
+                    # Há mais estabelecimentos visíveis que não foram coletados
+                    limite_scrolls = 30  # Mais tentativas quando há elementos não coletados
+                    print(f"Há {total_visiveis - resultados_coletados} estabelecimentos não coletados, continuando...")
+                elif resultados_coletados < 15:
+                    limite_scrolls = 25  # Mais tentativas quando poucos resultados
+                else:
+                    limite_scrolls = 15  # Limite normal
+                    
+                print(f"Scroll sem novos estabelecimentos: {buscar_google_maps.scrolls_sem_novos}/{limite_scrolls}")
+                
+                if buscar_google_maps.scrolls_sem_novos >= limite_scrolls:
+                    print(f"Parando: {buscar_google_maps.scrolls_sem_novos} scrolls consecutivos sem novos estabelecimentos")
+                    print(f"Coletados: {resultados_coletados}, Visíveis: {total_visiveis}, Mais disponíveis: {mais_resultados_disponiveis}")
+                    break
+            else:
+                buscar_google_maps.scrolls_sem_novos = 0
+                print(f"Reset contador: encontrados {novos_estabelecimentos} novos estabelecimentos")
+            
+            # Scroll para carregar mais com estratégias diferentes
             if resultados_coletados < max_resultados:
                 try:
+                    # Tentar diferentes estratégias de scroll
                     scroll_container = driver.find_element(By.CSS_SELECTOR, "[role='main'], .m6QErb, .Nv2PK")
-                    driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
-                except:
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(3)
+                    
+                    # Estratégias mais agressivas quando há poucos resultados
+                    if resultados_coletados < 15:
+                        # Estratégia agressiva: múltiplos scrolls pequenos
+                        if scroll % 4 == 0:
+                            for i in range(3):
+                                current_scroll = driver.execute_script("return arguments[0].scrollTop", scroll_container)
+                                driver.execute_script("arguments[0].scrollTop = arguments[1] + 400", scroll_container, current_scroll)
+                                time.sleep(0.5)
+                        # Estratégia agressiva: scroll até o final múltiplas vezes
+                        elif scroll % 4 == 1:
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
+                            time.sleep(1)
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollTop - 300", scroll_container)
+                            time.sleep(0.5)
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
+                        # Estratégia agressiva: scroll com Page Down
+                        elif scroll % 4 == 2:
+                            scroll_container.send_keys(Keys.PAGE_DOWN)
+                            time.sleep(0.5)
+                            scroll_container.send_keys(Keys.PAGE_DOWN)
+                        # Estratégia agressiva: scroll gradual rápido
+                        else:
+                            current_scroll = driver.execute_script("return arguments[0].scrollTop", scroll_container)
+                            driver.execute_script("arguments[0].scrollTop = arguments[1] + 1200", scroll_container, current_scroll)
+                    else:
+                        # Estratégias normais quando já tem resultados suficientes
+                        if scroll % 3 == 0:
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
+                        elif scroll % 3 == 1:
+                            current_scroll = driver.execute_script("return arguments[0].scrollTop", scroll_container)
+                            driver.execute_script("arguments[0].scrollTop = arguments[1] + 800", scroll_container, current_scroll)
+                        else:
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
+                            time.sleep(1)
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollTop - 200", scroll_container)
+                        
+                except Exception as scroll_error:
+                    print(f"Erro no scroll principal: {scroll_error}")
+                    # Fallback: scroll da página
+                    try:
+                        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    except:
+                        # Último fallback: usar teclas
+                        try:
+                            driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.END)
+                        except:
+                            pass
+                            
+                # Tempo de espera variável: menor quando há poucos resultados
+                if resultados_coletados < 15:
+                    wait_time = min(4, 2 + (scroll // 15))  # Mais rápido quando poucos resultados
+                else:
+                    wait_time = min(6, 3 + (scroll // 10))  # Normal quando já tem resultados
+                time.sleep(wait_time)
         
         driver.quit()
         
@@ -434,30 +664,78 @@ def extrair_dados_estabelecimento(driver, elemento):
         except:
             pass
         
-        # Nome do estabelecimento - buscar no painel lateral primeiro com classes atualizadas
+        # Nome do estabelecimento - buscar com seletores atualizados do Google Maps 2024
         try:
-            # Tentar no painel lateral com as classes específicas
-            nome_elem = driver.find_element(By.CSS_SELECTOR, "[role='main'] .Io6YTe.fontBodyMedium.kR99db.fdkmkc, [role='main'] h1, .x3AX1-LfntMc-header-title-title, .qBF1Pd, .DUwDvf")
-            print(f"1 - {nome_elem.text.strip()}")
-            dados['nome'] = nome_elem.text.strip()
+            # Tentar no painel lateral com seletores mais específicos e atualizados
+            nome_elem = driver.find_element(By.CSS_SELECTOR, "[role='main'] h1[data-attrid='title'], [role='main'] h1.x3AX1-LfntMc-header-title-title, [role='main'] .x3AX1-LfntMc-header-title-title, [role='main'] h1.DUwDvf.lfPIob, [role='main'] .DUwDvf.lfPIob, [role='main'] h1")
+            nome_text = nome_elem.text.strip()
+            print(f"1 - {nome_text}")
+            # Filtrar nomes inválidos com validação mais rigorosa
+            nomes_invalidos = ['resultados', 'maps', 'google', 'pesquisar', 'resultado', 'estabelecimentos', 'pesquisa', 'buscar']
+            if (nome_text and len(nome_text) >= 3 and len(nome_text) <= 100 and 
+                nome_text.lower() not in nomes_invalidos and
+                not nome_text.lower().startswith('resultado') and
+                not nome_text.lower().startswith('pesquis') and
+                not nome_text.isdigit() and
+                not nome_text.startswith('http')):
+                dados['nome'] = nome_text
+            else:
+                raise Exception("Nome inválido encontrado")
         except:
             try:
-                # Fallback: buscar no elemento original
-                nome_elem = elemento.find_element(By.CSS_SELECTOR, ".Io6YTe.fontBodyMedium.kR99db.fdkmkc, .qBF1Pd, .fontHeadlineSmall, [data-value='Título'], .DUwDvf")
-                dados['nome'] = nome_elem.text.strip()
+                # Fallback: buscar no elemento original da lista com seletores atualizados
+                nome_elem = elemento.find_element(By.CSS_SELECTOR, ".qBF1Pd.fontHeadlineSmall, .hfpxzc, .NrDZNb, .qBF1Pd, [data-value='Título'], .fontHeadlineSmall")
+                nome_text = nome_elem.text.strip()
+                print(f"2 - {nome_text}")
+                # Aplicar mesma validação rigorosa
+                nomes_invalidos = ['resultados', 'maps', 'google', 'pesquisar', 'resultado', 'estabelecimentos', 'pesquisa', 'buscar']
+                if (nome_text and len(nome_text) >= 3 and len(nome_text) <= 100 and 
+                    nome_text.lower() not in nomes_invalidos and
+                    not nome_text.lower().startswith('resultado') and
+                    not nome_text.lower().startswith('pesquis') and
+                    not nome_text.isdigit() and
+                    not nome_text.startswith('http')):
+                    dados['nome'] = nome_text
+                else:
+                    raise Exception("Nome inválido encontrado")
             except:
                 try:
-                    # Último fallback: buscar por qualquer texto que pareça um nome
-                    nome_elems = driver.find_elements(By.CSS_SELECTOR, ".Io6YTe, .fontBodyMedium, .kR99db, .fdkmkc, a[href*='/maps/place/'], h3, .NrDZNb, .DUwDvf")
-                    for elem in nome_elems:
-                        text = elem.text.strip()
-                        if text and len(text) > 2 and len(text) < 100 and not text.isdigit() and not any(char in text for char in ['★', '·', '(', ')']):
-                            dados['nome'] = text
-                            break
+                    # Terceiro fallback: buscar por aria-label ou title
+                    nome_elem = elemento.find_element(By.CSS_SELECTOR, "[aria-label]:not([aria-label*='Resultado']):not([aria-label*='resultado']), [title]:not([title*='Resultado']):not([title*='resultado'])")
+                    nome_text = nome_elem.get_attribute('aria-label') or nome_elem.get_attribute('title') or nome_elem.text.strip()
+                    print(f"3 - {nome_text}")
+                    # Aplicar validação rigorosa
+                    nomes_invalidos = ['resultados', 'maps', 'google', 'pesquisar', 'resultado', 'estabelecimentos', 'pesquisa', 'buscar']
+                    if (nome_text and len(nome_text) >= 3 and len(nome_text) <= 100 and 
+                        nome_text.lower() not in nomes_invalidos and
+                        not nome_text.lower().startswith('resultado') and
+                        not nome_text.lower().startswith('pesquis') and
+                        not nome_text.startswith('http') and not nome_text.isdigit() and
+                        not any(char in nome_text for char in ['★', '·'])):
+                        dados['nome'] = nome_text
                     else:
-                        dados['nome'] = "Nome não encontrado"
+                        raise Exception("Nome inválido encontrado")
                 except:
-                    dados['nome'] = "Nome não encontrado"
+                    try:
+                        # Último fallback: buscar por qualquer texto que pareça um nome válido
+                        nome_elems = driver.find_elements(By.CSS_SELECTOR, "h1, h2, h3, .DUwDvf, .lfPIob, .hfpxzc, .qBF1Pd, .NrDZNb, a[href*='/maps/place/']")
+                        for elem in nome_elems:
+                            text = elem.text.strip()
+                            print(f"4 - {text}")
+                            # Aplicar validação rigorosa e consistente
+                            nomes_invalidos = ['resultados', 'maps', 'google', 'pesquisar', 'resultado', 'estabelecimentos', 'pesquisa', 'buscar']
+                            if (text and len(text) >= 3 and len(text) <= 100 and 
+                                text.lower() not in nomes_invalidos and
+                                not text.lower().startswith('resultado') and
+                                not text.lower().startswith('pesquis') and
+                                not text.startswith('http') and not text.isdigit() and
+                                not any(char in text for char in ['★', '·'])):
+                                dados['nome'] = text
+                                break
+                        else:
+                            dados['nome'] = "Nome não encontrado"
+                    except:
+                        dados['nome'] = "Nome não encontrado"
         
         # Avaliação - buscar no painel lateral primeiro com classes atualizadas
         try:
@@ -602,9 +880,26 @@ def extrair_dados_estabelecimento(driver, elemento):
         return None
 
 def salvar_dados_maps(termo_busca):
-    """Salva os dados do Google Maps em arquivo CSV"""
+    """Salva os dados do Google Maps em arquivo CSV com deduplicação final"""
+    global dados_maps
+    
     if not dados_maps:
         return
+    
+    # Deduplicação final baseada no nome (case-insensitive)
+    dados_unicos = []
+    nomes_vistos = set()
+    
+    for estabelecimento in dados_maps:
+        nome_normalizado = estabelecimento.get('nome', '').strip().lower()
+        if nome_normalizado and nome_normalizado not in nomes_vistos and nome_normalizado != "nome não encontrado":
+            nomes_vistos.add(nome_normalizado)
+            dados_unicos.append(estabelecimento)
+        else:
+            print(f"Duplicata removida na gravação: {estabelecimento.get('nome', 'Nome não encontrado')}")
+    
+    # Atualizar dados_maps com dados únicos
+    dados_maps = dados_unicos
     
     # Nome do arquivo baseado no termo de busca
     nome_arquivo = f"google_maps_{termo_busca.replace(' ', '_').replace('/', '_')}.csv"
@@ -614,7 +909,13 @@ def salvar_dados_maps(termo_busca):
         fieldnames = ['nome', 'avaliacao', 'endereco', 'telefone', 'tipo', 'horario']
         writer = csv.DictWriter(arquivo, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(dados_maps)
+        writer.writerows(dados_unicos)
+    
+    print(f"Dados salvos: {len(dados_unicos)} estabelecimentos únicos em {nome_arquivo}")
+    
+    # Enviar via webhook se configurado
+    if dados_unicos:
+        enviar_webhook(dados_unicos)
 
 # --- ROTAS DA INTERFACE WEB ---
 
@@ -819,6 +1120,67 @@ def clean_duplicates():
     except Exception as e:
         return jsonify({'error': f'Erro ao limpar duplicatas: {str(e)}'}), 500
 
+@app.route('/clean_duplicates_maps', methods=['POST'])
+def clean_duplicates_maps():
+    """Endpoint para limpar registros duplicados do Google Maps"""
+    # Buscar arquivos do Google Maps
+    arquivos_maps = [f for f in os.listdir('.') if f.startswith('google_maps_') and f.endswith('.csv')]
+    
+    if not arquivos_maps:
+        return jsonify({'error': 'Nenhum arquivo do Google Maps encontrado'}), 404
+    
+    try:
+        resultados = []
+        
+        for arquivo in arquivos_maps:
+            # Ler dados existentes
+            dados_originais = []
+            with open(arquivo, 'r', newline='', encoding='utf-8') as file:
+                reader = csv.DictReader(file)
+                dados_originais = list(reader)
+            
+            if not dados_originais:
+                continue
+            
+            # Remover duplicatas baseado no nome (case-insensitive)
+            dados_unicos = []
+            nomes_vistos = set()
+            
+            for registro in dados_originais:
+                nome_normalizado = registro.get('nome', '').strip().lower()
+                if nome_normalizado and nome_normalizado not in nomes_vistos and nome_normalizado != "nome não encontrado":
+                    nomes_vistos.add(nome_normalizado)
+                    dados_unicos.append(registro)
+            
+            # Criar backup do arquivo original
+            backup_filename = f'{arquivo.replace(".csv", "")}_backup_{int(time.time())}.csv'
+            os.rename(arquivo, backup_filename)
+            
+            # Salvar dados limpos
+            with open(arquivo, 'w', newline='', encoding='utf-8') as file:
+                if dados_unicos:
+                    fieldnames = dados_unicos[0].keys()
+                    writer = csv.DictWriter(file, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(dados_unicos)
+            
+            resultados.append({
+                'arquivo': arquivo,
+                'original_count': len(dados_originais),
+                'duplicates_removed': len(dados_originais) - len(dados_unicos),
+                'final_count': len(dados_unicos),
+                'backup_file': backup_filename
+            })
+        
+        return jsonify({
+            'success': True,
+            'message': f'Duplicatas removidas de {len(resultados)} arquivo(s) do Google Maps!',
+            'results': resultados
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao processar arquivos: {str(e)}'}), 500
+
 # --- ROTAS GOOGLE MAPS ---
 
 @app.route('/scrape_maps', methods=['POST'])
@@ -831,7 +1193,7 @@ def scrape_maps():
     
     data = request.get_json()
     termo_busca = data.get('termo_busca', '').strip()
-    max_resultados = int(data.get('max_resultados', 50))
+    max_resultados = int(data.get('max_resultados', 200))
     
     if not termo_busca:
         return jsonify({'success': False, 'message': 'Termo de busca é obrigatório'})
@@ -865,55 +1227,205 @@ def results_maps():
 @app.route('/download_maps/<formato>')
 def download_maps(formato):
     """Download dos dados do Google Maps em diferentes formatos"""
+    global dados_maps
+    
     if not dados_maps:
-        return jsonify({'error': 'Nenhum dado disponível para download'}), 404
+        return jsonify({'error': 'Nenhum dado disponível'}), 404
     
     try:
         if formato == 'csv':
-            # Criar CSV em memória
+            # Criar CSV temporário
             output = BytesIO()
-            df = pd.DataFrame(dados_maps)
-            df.to_csv(output, index=False, encoding='utf-8')
+            output.write('\ufeff'.encode('utf-8'))  # BOM para UTF-8
+            
+            fieldnames = ['nome', 'endereco', 'telefone', 'avaliacao', 'total_avaliacoes', 'categoria', 'website']
+            
+            csv_content = 'nome,endereco,telefone,avaliacao,total_avaliacoes,categoria,website\n'
+            for item in dados_maps:
+                linha = f"\"{item.get('nome', '')}\",\"{item.get('endereco', '')}\",\"{item.get('telefone', '')}\",\"{item.get('avaliacao', '')}\",\"{item.get('total_avaliacoes', '')}\",\"{item.get('categoria', '')}\",\"{item.get('website', '')}\"\n"
+                csv_content += linha
+            
+            output.write(csv_content.encode('utf-8'))
             output.seek(0)
             
             return send_file(
                 output,
-                mimetype='text/csv',
                 as_attachment=True,
-                download_name='google_maps_resultados.csv'
+                download_name=f'google_maps_resultados_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                mimetype='text/csv'
             )
             
         elif formato == 'json':
-            # Criar JSON em memória
-            output = BytesIO()
             json_data = json.dumps(dados_maps, ensure_ascii=False, indent=2)
-            output.write(json_data.encode('utf-8'))
+            output = BytesIO(json_data.encode('utf-8'))
             output.seek(0)
             
             return send_file(
                 output,
-                mimetype='application/json',
                 as_attachment=True,
-                download_name='google_maps_resultados.json'
+                download_name=f'google_maps_resultados_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json',
+                mimetype='application/json'
             )
             
         elif formato == 'excel':
-            # Criar Excel em memória
-            output = BytesIO()
             df = pd.DataFrame(dados_maps)
+            output = BytesIO()
+            
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Google Maps', index=False)
+            
             output.seek(0)
             
             return send_file(
                 output,
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 as_attachment=True,
-                download_name='google_maps_resultados.xlsx'
+                download_name=f'google_maps_resultados_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
             
     except Exception as e:
         return jsonify({'error': f'Erro ao gerar arquivo: {str(e)}'}), 500
+    
+    return jsonify({'error': 'Formato não suportado'}), 400
+
+# --- ROTAS DE WEBHOOK ---
+
+@app.route('/webhook/config', methods=['GET', 'POST'])
+def webhook_config_route():
+    """Configurar webhook"""
+    global webhook_config
+    
+    if request.method == 'GET':
+        return jsonify(webhook_config)
+    
+    try:
+        data = request.get_json()
+        webhook_config.update({
+            'url': data.get('url', ''),
+            'enabled': data.get('enabled', False),
+            'headers': data.get('headers', {}),
+            'batch_size': data.get('batch_size', 10)
+        })
+        return jsonify({'success': True, 'message': 'Webhook configurado com sucesso'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/webhook/test', methods=['POST'])
+def test_webhook():
+    """Testar webhook com dados de exemplo"""
+    if not webhook_config['enabled'] or not webhook_config['url']:
+        return jsonify({'success': False, 'error': 'Webhook não configurado'}), 400
+    
+    dados_teste = [
+        {'nome': 'João Silva', 'telefone': '(11) 99999-9999'},
+        {'nome': 'Maria Santos', 'telefone': '(11) 88888-8888'}
+    ]
+    
+    try:
+        enviar_webhook(dados_teste)
+        return jsonify({'success': True, 'message': 'Webhook testado com sucesso'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/export/advanced', methods=['POST'])
+def advanced_export():
+    """Exportação avançada com filtros"""
+    try:
+        data = request.get_json()
+        format_type = data.get('format', 'csv')
+        filters = data.get('filters', {})
+        
+        if not os.path.exists('consultores.csv'):
+            return jsonify({'error': 'Nenhum dado disponível'}), 404
+        
+        # Ler dados
+        dados = []
+        with open('consultores.csv', 'r', newline='', encoding='utf-8') as file:
+            reader = csv.DictReader(file)
+            dados = list(reader)
+        
+        # Aplicar filtros
+        if filters.get('search'):
+            search_term = filters['search'].lower()
+            dados = [d for d in dados if search_term in d.get('nome', '').lower() or search_term in d.get('telefone', '').lower()]
+        
+        if filters.get('date_from') or filters.get('date_to'):
+            # Implementar filtro de data se necessário
+            pass
+        
+        if not dados:
+            return jsonify({'error': 'Nenhum dado encontrado com os filtros aplicados'}), 404
+        
+        # Gerar arquivo
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        if format_type == 'csv':
+            output = BytesIO()
+            output.write('\ufeff'.encode('utf-8'))  # BOM para UTF-8
+            
+            csv_content = 'nome,telefone,data_coleta\n'
+            for item in dados:
+                csv_content += f"\"{item.get('nome', '')}\",\"{item.get('telefone', '')}\",\"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\"\n"
+            
+            output.write(csv_content.encode('utf-8'))
+            output.seek(0)
+            
+            return send_file(
+                output,
+                as_attachment=True,
+                download_name=f'consultores_filtrado_{timestamp}.csv',
+                mimetype='text/csv'
+            )
+        
+        elif format_type == 'json':
+            # Adicionar metadados
+            export_data = {
+                'metadata': {
+                    'export_date': datetime.now().isoformat(),
+                    'total_records': len(dados),
+                    'filters_applied': filters
+                },
+                'data': dados
+            }
+            
+            json_data = json.dumps(export_data, ensure_ascii=False, indent=2)
+            output = BytesIO(json_data.encode('utf-8'))
+            output.seek(0)
+            
+            return send_file(
+                output,
+                as_attachment=True,
+                download_name=f'consultores_filtrado_{timestamp}.json',
+                mimetype='application/json'
+            )
+        
+        elif format_type == 'excel':
+            df = pd.DataFrame(dados)
+            df['data_coleta'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Consultores', index=False)
+                
+                # Adicionar planilha de metadados
+                metadata_df = pd.DataFrame([
+                    ['Data da Exportação', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                    ['Total de Registros', len(dados)],
+                    ['Filtros Aplicados', str(filters)]
+                ], columns=['Campo', 'Valor'])
+                metadata_df.to_excel(writer, sheet_name='Metadados', index=False)
+            
+            output.seek(0)
+            
+            return send_file(
+                output,
+                as_attachment=True,
+                download_name=f'consultores_filtrado_{timestamp}.xlsx',
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro na exportação: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
