@@ -69,17 +69,52 @@ fi
 # 5. Instalar ChromeDriver
 log "🚗 Instalando ChromeDriver..."
 # Obter versão do Chrome
-CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1-3)
-log "📋 Versão do Chrome detectada: $CHROME_VERSION"
+CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1)
+log "📋 Versão principal do Chrome detectada: $CHROME_VERSION"
 
-# Baixar ChromeDriver compatível
-CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
+# Tentar diferentes métodos para obter ChromeDriver
+CHROMEDRIVER_VERSION=""
+
+# Método 1: Tentar versão específica
+if [ "$CHROME_VERSION" -ge "115" ]; then
+    # Para Chrome 115+, usar Chrome for Testing API
+    log "📋 Usando Chrome for Testing API para Chrome $CHROME_VERSION+"
+    CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_VERSION" 2>/dev/null || echo "")
+fi
+
+# Método 2: Fallback para versões mais antigas
+if [ -z "$CHROMEDRIVER_VERSION" ]; then
+    log "📋 Tentando método legacy para ChromeDriver"
+    CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION" 2>/dev/null || echo "")
+fi
+
+# Método 3: Usar última versão estável como fallback
+if [ -z "$CHROMEDRIVER_VERSION" ]; then
+    warn "Não foi possível detectar versão específica, usando última versão estável"
+    CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE" 2>/dev/null || echo "119.0.6045.105")
+fi
+
 log "📋 Versão do ChromeDriver: $CHROMEDRIVER_VERSION"
 
-wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
-unzip /tmp/chromedriver.zip -d /tmp/
-mv /tmp/chromedriver /usr/local/bin/
-chmod +x /usr/local/bin/chromedriver
+# Baixar ChromeDriver
+if [ "$CHROME_VERSION" -ge "115" ] && [ -n "$CHROMEDRIVER_VERSION" ]; then
+    # Para Chrome 115+
+    wget -O /tmp/chromedriver.zip "https://storage.googleapis.com/chrome-for-testing-public/$CHROMEDRIVER_VERSION/linux64/chromedriver-linux64.zip" 2>/dev/null || \
+    wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
+else
+    # Para versões mais antigas
+    wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
+fi
+
+# Extrair e instalar
+if [ -f "/tmp/chromedriver.zip" ]; then
+    unzip /tmp/chromedriver.zip -d /tmp/
+    # Procurar o executável chromedriver
+    find /tmp -name "chromedriver" -type f -exec mv {} /usr/local/bin/ \;
+    chmod +x /usr/local/bin/chromedriver
+else
+    error "Falha ao baixar ChromeDriver"
+fi
 
 # Verificar ChromeDriver
 if chromedriver --version; then
