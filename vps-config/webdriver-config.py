@@ -30,9 +30,16 @@ class WebDriverManager:
     def _check_chrome(self):
         """Verifica se Chrome está disponível"""
         try:
-            os.system('google-chrome --version > /dev/null 2>&1')
-            return os.system('chromedriver --version > /dev/null 2>&1') == 0
-        except:
+            # Verificar se Chrome está instalado
+            chrome_check = os.system('google-chrome --version > /dev/null 2>&1')
+            if chrome_check != 0:
+                return False
+            
+            # Verificar se ChromeDriver está disponível
+            chromedriver_check = os.system('chromedriver --version > /dev/null 2>&1')
+            return chromedriver_check == 0
+        except Exception as e:
+            print(f"Erro ao verificar Chrome: {e}")
             return False
     
     def _check_firefox(self):
@@ -140,13 +147,33 @@ class WebDriverManager:
                     service = ChromeService(path)
                     return webdriver.Chrome(service=service, options=options)
             except Exception as e:
+                print(f"Falha ao usar ChromeDriver em {path}: {e}")
                 continue
         
-        # Fallback: usar webdriver-manager
+        # Fallback: usar webdriver-manager com tratamento de erro robusto
         try:
-            service = ChromeService(ChromeDriverManager().install())
+            print("Tentando baixar ChromeDriver via webdriver-manager...")
+            # Verificar se consegue obter a versão do Chrome
+            chrome_version_cmd = 'google-chrome --version 2>/dev/null || google-chrome-stable --version 2>/dev/null'
+            version_result = os.popen(chrome_version_cmd).read().strip()
+            
+            if not version_result:
+                raise Exception("Não foi possível detectar a versão do Chrome")
+            
+            print(f"Versão do Chrome detectada: {version_result}")
+            
+            # Tentar instalar ChromeDriver
+            chrome_manager = ChromeDriverManager()
+            driver_path = chrome_manager.install()
+            
+            if not driver_path or not os.path.exists(driver_path):
+                raise Exception("ChromeDriver não foi instalado corretamente")
+            
+            service = ChromeService(driver_path)
             return webdriver.Chrome(service=service, options=options)
+            
         except Exception as e:
+            print(f"Erro detalhado do ChromeDriver: {e}")
             raise Exception(f"Falha ao criar ChromeDriver: {e}")
     
     def _create_firefox_driver(self):
@@ -166,13 +193,22 @@ class WebDriverManager:
                     service = FirefoxService(path)
                     return webdriver.Firefox(service=service, options=options)
             except Exception as e:
+                print(f"Falha ao usar GeckoDriver em {path}: {e}")
                 continue
         
         # Fallback: usar webdriver-manager
         try:
-            service = FirefoxService(GeckoDriverManager().install())
+            print("Tentando baixar GeckoDriver via webdriver-manager...")
+            gecko_manager = GeckoDriverManager()
+            driver_path = gecko_manager.install()
+            
+            if not driver_path or not os.path.exists(driver_path):
+                raise Exception("GeckoDriver não foi instalado corretamente")
+            
+            service = FirefoxService(driver_path)
             return webdriver.Firefox(service=service, options=options)
         except Exception as e:
+            print(f"Erro detalhado do GeckoDriver: {e}")
             raise Exception(f"Falha ao criar FirefoxDriver: {e}")
 
 # Função de conveniência para uso direto
