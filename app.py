@@ -78,30 +78,27 @@ def coletar_urls(url_base, scroll_infinite=True, link_selector="a[href*='consult
     # Usar configuração otimizada se disponível
     if WEBDRIVER_CONFIG_AVAILABLE:
         try:
-            driver = create_webdriver(prefer_chrome=True)
+            driver = create_webdriver(prefer_chrome=False)  # Usar Firefox
         except Exception as e:
             update_progress(f"Erro ao iniciar navegador: {e}", 0, 100, 'error')
             raise Exception(f"Falha ao iniciar navegador: {e}")
     else:
-        # Fallback para configuração antiga
+        # Fallback para configuração antiga - Firefox
         try:
-            options = webdriver.ChromeOptions()
+            options = webdriver.FirefoxOptions()
             options.add_argument('--headless')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
-            options.add_argument('--disable-web-security')
-            options.add_argument('--disable-extensions')
-            options.add_argument('--disable-plugins')
             options.add_argument('--window-size=1920,1080')
             
             try:
-                driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=options)
+                driver = webdriver.Firefox(executable_path='/usr/local/bin/geckodriver', options=options)
             except:
-                chrome_service = ChromeService(ChromeDriverManager().install())
-                driver = webdriver.Chrome(service=chrome_service, options=options)
-        except Exception as chrome_error:
-            raise Exception(f"Falha ao iniciar Chrome: {chrome_error}")
+                firefox_service = FirefoxService(GeckoDriverManager().install())
+                driver = webdriver.Firefox(service=firefox_service, options=options)
+        except Exception as firefox_error:
+            raise Exception(f"Falha ao iniciar Firefox: {firefox_error}")
     urls_corretores = set()
     
     try:
@@ -153,13 +150,13 @@ def extrair_dados(urls, name_selector='.agent-name', phone_selector="a[href^='te
     # Usar configuração otimizada se disponível
     if WEBDRIVER_CONFIG_AVAILABLE:
         try:
-            driver = create_webdriver(prefer_chrome=True)
+            driver = create_webdriver(prefer_chrome=False)  # Usar Firefox
         except Exception as e:
             update_progress(f"Erro ao iniciar navegador: {e}", 0, len(urls), 'error')
             raise Exception(f"Falha ao iniciar navegador: {e}")
     else:
-        # Fallback para configuração antiga
-        options = webdriver.ChromeOptions()
+        # Fallback para configuração antiga - Firefox
+        options = webdriver.FirefoxOptions()
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
@@ -167,15 +164,15 @@ def extrair_dados(urls, name_selector='.agent-name', phone_selector="a[href^='te
         options.add_argument('--window-size=1920,1080')
         
         try:
-            driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=options)
+            driver = webdriver.Firefox(executable_path='/usr/local/bin/geckodriver', options=options)
         except:
-            chrome_service = ChromeService(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=chrome_service, options=options)
+            firefox_service = FirefoxService(GeckoDriverManager().install())
+            driver = webdriver.Firefox(service=firefox_service, options=options)
     dados_consultores = []
     
-    # Converter seletores em listas
-    seletores_nome = [s.strip() for s in name_selector.split(',')]
-    seletores_telefone = [s.strip() for s in phone_selector.split(',')]
+    # Converter seletores em listas (com verificação de None)
+    seletores_nome = [s.strip() for s in (name_selector or '.agent-name').split(',')]
+    seletores_telefone = [s.strip() for s in (phone_selector or "a[href^='tel:']").split(',')]
     
     try:
         for i, url in enumerate(urls):
