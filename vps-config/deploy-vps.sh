@@ -41,24 +41,12 @@ apt update && apt upgrade -y
 
 # 2. Instalar dependências básicas
 log "🔧 Instalando dependências básicas..."
-apt install -y python3 python3-pip python3-venv git nginx ufw curl wget gnupg2 software-properties-common
+apt install -y python3 python3-pip python3-venv git nginx ufw curl wget gnupg2 software-properties-common supervisor
 
-# 3. Instalar Chrome/Chromium
-log "🌐 Instalando Google Chrome..."
-wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list
-apt update
-apt install -y google-chrome-stable
-
-# 4. Instalar ChromeDriver
-log "🚗 Instalando ChromeDriver..."
-CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1)
-CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
-wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-unzip /tmp/chromedriver.zip -d /tmp/
-mv /tmp/chromedriver /usr/local/bin/
-chmod +x /usr/local/bin/chromedriver
-rm /tmp/chromedriver.zip
+# 3. Instalar navegadores para webscraping
+log "🌐 Instalando navegadores..."
+chmod +x /opt/webscraping-app/vps-config/install-browsers.sh
+/opt/webscraping-app/vps-config/install-browsers.sh
 
 # 5. Criar usuário para aplicação
 log "👤 Criando usuário webscraping..."

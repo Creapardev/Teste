@@ -10,6 +10,18 @@ from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.firefox.service import Service as FirefoxService
+
+# Importar configuração otimizada do webdriver
+try:
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'vps-config'))
+    from webdriver_config import create_webdriver
+    WEBDRIVER_CONFIG_AVAILABLE = True
+    print("✅ Configuração otimizada do webdriver carregada")
+except ImportError as e:
+    WEBDRIVER_CONFIG_AVAILABLE = False
+    print(f"⚠️ Configuração otimizada do webdriver não encontrada: {e}")
 import time
 import os
 import json
@@ -63,26 +75,33 @@ def update_progress(step, progress, total, status='running'):
 def coletar_urls(url_base, scroll_infinite=True, link_selector="a[href*='consultor-imobiliario']"):
     update_progress("Iniciando navegador...", 0, 100)
     
-    # Configurar Chrome para Docker/produção
-    try:
-        options = webdriver.ChromeOptions()
-        options.add_argument('--headless')  # Necessário para Docker
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--disable-web-security')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-plugins')
-        options.add_argument('--window-size=1920,1080')
-        
-        # Usar ChromeDriver do sistema se disponível, senão baixar
+    # Usar configuração otimizada se disponível
+    if WEBDRIVER_CONFIG_AVAILABLE:
         try:
-            driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=options)
-        except:
-            chrome_service = ChromeService(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=chrome_service, options=options)
-    except Exception as chrome_error:
-        raise Exception(f"Falha ao iniciar Chrome: {chrome_error}")
+            driver = create_webdriver(prefer_chrome=True)
+        except Exception as e:
+            update_progress(f"Erro ao iniciar navegador: {e}", 0, 100, 'error')
+            raise Exception(f"Falha ao iniciar navegador: {e}")
+    else:
+        # Fallback para configuração antiga
+        try:
+            options = webdriver.ChromeOptions()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--disable-web-security')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-plugins')
+            options.add_argument('--window-size=1920,1080')
+            
+            try:
+                driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=options)
+            except:
+                chrome_service = ChromeService(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=chrome_service, options=options)
+        except Exception as chrome_error:
+            raise Exception(f"Falha ao iniciar Chrome: {chrome_error}")
     urls_corretores = set()
     
     try:
@@ -131,20 +150,27 @@ def extrair_dados(urls, name_selector='.agent-name', phone_selector="a[href^='te
     
     update_progress("Iniciando extração de dados...", 0, len(urls))
     
-    # Configurar Chrome para Docker/produção
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless')  # Necessário para Docker
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    
-    # Usar ChromeDriver do sistema se disponível, senão baixar
-    try:
-        driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=options)
-    except:
-        chrome_service = ChromeService(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=chrome_service, options=options)
+    # Usar configuração otimizada se disponível
+    if WEBDRIVER_CONFIG_AVAILABLE:
+        try:
+            driver = create_webdriver(prefer_chrome=True)
+        except Exception as e:
+            update_progress(f"Erro ao iniciar navegador: {e}", 0, len(urls), 'error')
+            raise Exception(f"Falha ao iniciar navegador: {e}")
+    else:
+        # Fallback para configuração antiga
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        
+        try:
+            driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=options)
+        except:
+            chrome_service = ChromeService(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=chrome_service, options=options)
     dados_consultores = []
     
     # Converter seletores em listas
