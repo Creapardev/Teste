@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Scraper Personalizado</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🕷️ Web Scraper Avançado</h1>
+            <p>Ferramenta profissional para extração de dados</p>
+        </header>
+
+        <!-- Tab Navigation -->
+        <div class="tab-navigation">
+            <button class="tab-button active" data-tab="web-scraping-tab">🌐 Scraping Web</button>
+            <button class="tab-button" data-tab="google-maps-tab">🗺️ Google Maps</button>
+            <button class="tab-button" data-tab="data-management-tab">🔍 Gerenciamento</button>
+        </div>
+
+        <!-- Web Scraping Tab -->
+        <div id="web-scraping-tab" class="tab-content active">
+            <div class="section">
+                <h2>⚙️ Configuração do Scraping Web</h2>
+                <form action="/scrape" method="post" id="scrapeForm">
+                    <div class="input-group">
+                        <label for="url"><i class="fas fa-link"></i> URL do Site:</label>
+                        <input type="url" id="url" name="url" placeholder="https://exemplo.com" required>
+                        <div class="url-status" id="urlStatus"></div>
+                    </div>
+                    
+                    <div class="options-group">
+                        <h3><i class="fas fa-cog"></i> Opções Avançadas</h3>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="scrollInfinite" name="scroll_infinite" checked>
+                            <label for="scrollInfinite">Rolagem infinita automática</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="removeDuplicates" name="remove_duplicates" checked>
+                            <label for="removeDuplicates">Remover duplicatas</label>
+                        </div>
+                    </div>
+                    
+                    <div class="selectors-section">
+                        <h3><i class="fas fa-code"></i> Seletores CSS Personalizados</h3>
+                        <div class="selector-group">
+                            <label for="link_selector">Seletor de Links:</label>
+                            <input type="text" id="link_selector" name="link_selector" 
+                                   value="a[href*='/consultor/'], a[href*='/empresa/']" 
+                                   placeholder="Ex: a[href*='/consultor/']">
+                            <small>Seletor CSS para encontrar os links dos consultores</small>
+                        </div>
+                        <div class="selector-group">
+                            <label for="name_selector">Seletor de Nome:</label>
+                            <input type="text" id="name_selector" name="name_selector" 
+                                   value="h1.nome-consultor, .nome-consultor, h1, .page-titles h1" 
+                                   placeholder="Ex: h1.nome-consultor">
+                            <small>Seletor CSS para extrair o nome do consultor</small>
+                        </div>
+                        <div class="selector-group">
+                            <label for="phone_selector">Seletor de Telefone:</label>
+                            <input type="text" id="phone_selector" name="phone_selector" 
+                                   value=".telefone, .phone, [href^='tel:'], .contato-telefone, div.col-lg-4 h3" 
+                                   placeholder="Ex: .telefone, .phone">
+                            <small>Seletor CSS para extrair o telefone do consultor</small>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" id="submitBtn">
+                        <i class="fas fa-play"></i> Iniciar Coleta
+                    </button>
+                </form>
+                
+                <div id="progressContainer" class="progress-container" style="display: none;">
+                    <h3><i class="fas fa-spinner fa-spin"></i> Coletando dados...</h3>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">Iniciando...</div>
+                </div>
+                
+                {% if mensagem %}
+                <div class="message {{ 'success' if 'finalizada' in mensagem else 'error' }}">
+                    <i class="fas {{ 'fa-check-circle' if 'finalizada' in mensagem else 'fa-exclamation-triangle' }}"></i>
+                    {{ mensagem }}
+                </div>
+                {% endif %}
+                
+                <div class="stats-container">
+                    <h3><i class="fas fa-chart-bar"></i> Estatísticas</h3>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-number" id="total-registros">{{ total_registros or 0 }}</span>
+                            <span class="stat-label">Total de Registros</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-number" id="novos-registros">{{ novos_registros or 0 }}</span>
+                            <span class="stat-label">Novos Registros</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="download-container" id="download-section" style="display: none;">
+                    <h3><i class="fas fa-download"></i> Exportar Dados</h3>
+                    <div class="download-buttons">
+                        <button type="button" class="download-btn csv-btn" onclick="downloadData('csv')">
+                            <i class="fas fa-file-csv"></i> CSV
+                        </button>
+                        <button type="button" class="download-btn json-btn" onclick="downloadData('json')">
+                            <i class="fas fa-file-code"></i> JSON
+                        </button>
+                        <button type="button" class="download-btn excel-btn" onclick="downloadData('excel')">
+                            <i class="fas fa-file-excel"></i> Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Google Maps Tab -->
+        <div id="google-maps-tab" class="tab-content">
+            <div class="section">
+                <h2>🗺️ Busca no Google Maps</h2>
+                <form id="maps-form">
+                    <div class="input-group">
+                        <label for="termo-busca">Termo de Busca:</label>
+                        <input type="text" id="termo-busca" name="termo-busca" placeholder="Ex: restaurantes em São Paulo, dentistas Rio de Janeiro..." required>
+                        <small>Digite o que você quer buscar no Google Maps (estabelecimentos, serviços, etc.)</small>
+                    </div>
+                    
+                    <div class="input-group">
+                        <label for="max-resultados-maps">Máximo de Resultados:</label>
+                        <input type="number" id="max-resultados-maps" name="max-resultados-maps" value="50" min="10" max="200">
+                        <small>Quantidade máxima de estabelecimentos para coletar (10-200)</small>
+                    </div>
+                    
+                    <button type="submit" id="btn-maps" class="btn-primary">🚀 Buscar no Google Maps</button>
+                </form>
+                
+                <!-- Progress Maps -->
+                <div id="progress-maps" class="progress-container" style="display: none;">
+                    <div class="progress-info">
+                        <span id="progress-text-maps">Preparando busca...</span>
+                        <span id="progress-percent-maps">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="progress-fill-maps" class="progress-fill"></div>
+                    </div>
+                </div>
+                
+                <!-- Statistics Maps -->
+                <div id="statistics-maps" class="statistics" style="display: none;">
+                    <h3>📊 Estatísticas da Busca</h3>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Estabelecimentos Encontrados:</span>
+                            <span id="total-estabelecimentos" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Status:</span>
+                            <span id="status-busca-maps" class="stat-value">Aguardando</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Results Maps -->
+                <div id="results-maps" class="results" style="display: none;">
+                    <h3>🏪 Estabelecimentos Encontrados</h3>
+                    <div id="results-table-maps"></div>
+                </div>
+                
+                <!-- Download Maps -->
+                <div id="download-maps" class="download-section" style="display: none;">
+                    <h3>📥 Download dos Resultados</h3>
+                    <div class="download-buttons">
+                        <a href="/download_maps/csv" class="btn-download" target="_blank">📄 CSV</a>
+                        <a href="/download_maps/json" class="btn-download" target="_blank">📋 JSON</a>
+                        <a href="/download_maps/excel" class="btn-download" target="_blank">📊 Excel</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Management Tab -->
+        <div id="data-management-tab" class="tab-content">
+            <div class="section">
+                <h2>🔍 Gerenciamento de Dados</h2>
+                
+                <!-- Search Section -->
+                <div class="search-section">
+                    <h4>Pesquisar Registros</h4>
+                    <div class="search-input-group">
+                        <input type="text" id="searchInput" placeholder="Digite o nome ou telefone para pesquisar...">
+                        <button onclick="searchData()" class="search-btn">🔍 Pesquisar</button>
+                        <button onclick="clearSearch()" class="clear-btn">🗑️ Limpar</button>
+                    </div>
+                    <div id="searchResults" class="search-results"></div>
+                </div>
+                
+                <!-- Clean Duplicates Section -->
+                <div class="clean-section">
+                    <h4>Limpar Duplicatas</h4>
+                    <p class="clean-description">Remove registros duplicados baseado no nome.</p>
+                    <div class="clean-buttons">
+                        <button onclick="cleanDuplicates()" class="clean-btn">🧹 Limpar Duplicatas (Consultores)</button>
+                        <button onclick="cleanDuplicatesMaps()" class="clean-btn clean-btn-maps">🗺️ Limpar Duplicatas (Google Maps)</button>
+                    </div>
+                    <div id="cleanResults" class="clean-results"></div>
+                </div>
+                
+                <!-- Webhook Configuration -->
+                <div class="webhook-section">
+                    <h4><i class="fas fa-webhook"></i> Configuração de Webhook</h4>
+                    <div class="webhook-config">
+                        <div class="webhook-row">
+                            <div class="webhook-col">
+                                <div class="input-group">
+                                    <label for="webhookUrl">URL do Webhook</label>
+                                    <input type="url" id="webhookUrl" placeholder="https://exemplo.com/webhook">
+                                </div>
+                                <div class="input-group">
+                                    <label for="batchSize">Tamanho do Lote</label>
+                                    <input type="number" id="batchSize" value="10" min="1" max="100">
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="webhookEnabled">
+                                    <label for="webhookEnabled">Ativar Webhook</label>
+                                </div>
+                            </div>
+                            <div class="webhook-col">
+                                <div class="input-group">
+                                    <label for="webhookHeaders">Headers (JSON)</label>
+                                    <textarea id="webhookHeaders" rows="4" placeholder='{"Authorization": "Bearer token", "Content-Type": "application/json"}'></textarea>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="webhook-buttons">
+                            <button onclick="saveWebhookConfig()" class="webhook-btn save-btn">💾 Salvar Configuração</button>
+                            <button onclick="testWebhook()" class="webhook-btn test-btn">🧪 Testar Webhook</button>
+                            <button onclick="loadWebhookConfig()" class="webhook-btn load-btn">📂 Carregar Configuração</button>
+                        </div>
+                        <div id="webhookResults" class="webhook-results"></div>
+                    </div>
+                </div>
+                
+                <!-- Advanced Export -->
+                <div class="export-section">
+                    <h4><i class="fas fa-file-export"></i> Exportação Avançada</h4>
+                    <div class="export-config">
+                        <div class="export-row">
+                            <div class="export-col">
+                                <div class="input-group">
+                                    <label for="exportFormat">Formato</label>
+                                    <select id="exportFormat">
+                                        <option value="csv">CSV</option>
+                                        <option value="json">JSON</option>
+                                        <option value="excel">Excel</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="export-col">
+                                <div class="input-group">
+                                    <label for="exportSearch">Filtro de Busca</label>
+                                    <input type="text" id="exportSearch" placeholder="Nome ou telefone...">
+                                </div>
+                            </div>
+                            <div class="export-col">
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="includeMetadata" checked>
+                                    <label for="includeMetadata">Incluir Metadados</label>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick="advancedExport()" class="export-btn">📤 Exportar com Filtros</button>
+                        <div id="exportResults" class="export-results"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
